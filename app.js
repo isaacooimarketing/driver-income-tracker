@@ -58,7 +58,7 @@
     "2026-12-25": "Christmas Day"
   };
 
-  const state = loadState();
+  const state = emptyState();
   let currentLanguage = localStorage.getItem(LANGUAGE_KEY) || "zh";
   let editingId = null;
   let editingMovementId = null;
@@ -67,6 +67,7 @@
   let supabaseUserId = null;
   let syncTimer = null;
   let isSyncing = false;
+  let isAppUnlocked = false;
 
   const copy = {
     zh: {
@@ -405,7 +406,7 @@
     $("nav-compare").textContent = t("navCompare");
     $("nav-monthly").textContent = t("navMonth");
 
-    renderAll();
+    if (isAppUnlocked) renderAll();
     updateAuthUi();
   }
 
@@ -421,6 +422,10 @@
     "'": "&#39;"
   }[char]));
 
+  function emptyState() {
+    return { records: [], movements: [], deletedRecordIds: [], seededNoteVersion: "", lastSyncedAt: "" };
+  }
+
   function loadState() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
@@ -434,6 +439,44 @@
     } catch {
       return { records: [], movements: [], deletedRecordIds: [], seededNoteVersion: "", lastSyncedAt: "" };
     }
+  }
+
+  function replaceState(nextState) {
+    state.records = nextState.records || [];
+    state.movements = nextState.movements || [];
+    state.deletedRecordIds = nextState.deletedRecordIds || [];
+    state.seededNoteVersion = nextState.seededNoteVersion || "";
+    state.lastSyncedAt = nextState.lastSyncedAt || "";
+  }
+
+  function clearPrivateUi() {
+    $("incomeOverview").innerHTML = "";
+    $("dashboardGoals").innerHTML = "";
+    $("weekAlert").textContent = "";
+    $("dashboardMetrics").innerHTML = "";
+    $("movementList").innerHTML = "";
+    $("comparisonGrid").innerHTML = "";
+    $("monthlyGoals").innerHTML = "";
+    $("monthlyMetrics").innerHTML = "";
+  }
+
+  function unlockPrivateApp() {
+    if (isAppUnlocked) return;
+    replaceState(loadState());
+    seedManualNoteData();
+    resetDailyForm();
+    isAppUnlocked = true;
+    document.body.classList.remove("auth-locked");
+    renderAll();
+  }
+
+  function lockPrivateApp() {
+    isAppUnlocked = false;
+    replaceState(emptyState());
+    editingId = null;
+    editingMovementId = null;
+    document.body.classList.add("auth-locked");
+    clearPrivateUi();
   }
 
   function persist(options = {}) {
@@ -493,8 +536,11 @@
         supabaseUserId = session?.user?.id || null;
         updateAuthUi();
         if (supabaseUserId) {
+          unlockPrivateApp();
           await pullSupabaseState();
           scheduleSupabaseSync(0);
+        } else {
+          lockPrivateApp();
         }
       });
 
@@ -505,6 +551,7 @@
       updateAuthUi();
       if (!supabaseUserId) return;
 
+      unlockPrivateApp();
       await pullSupabaseState();
       scheduleSupabaseSync(0);
     } catch (error) {
@@ -652,6 +699,7 @@
     if (!supabaseClient) return;
     await supabaseClient.auth.signOut();
     supabaseUserId = null;
+    lockPrivateApp();
     updateAuthUi();
   }
 
@@ -1772,8 +1820,6 @@
   $("date").value = today;
   $("movementDate").value = today;
   $("monthFilter").value = currentMonth;
-  seedManualNoteData();
-  resetDailyForm();
   initEvents();
   applyLanguage();
   initSupabaseSync();

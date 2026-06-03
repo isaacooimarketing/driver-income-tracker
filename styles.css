@@ -119,6 +119,50 @@ textarea {
   display: none !important;
 }
 
+body.auth-locked .app-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+body.auth-locked .topbar {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: 26px;
+  background: var(--panel);
+  border: 2px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+body.auth-locked .topbar > div:first-child {
+  display: none;
+}
+
+body.auth-locked main,
+body.auth-locked .bottom-nav,
+body.auth-locked #exportExcelBtn,
+body.auth-locked #languageToggleBtn {
+  display: none !important;
+}
+
+body.auth-locked .top-actions {
+  justify-content: stretch;
+}
+
+body.auth-locked .auth-box {
+  width: 100%;
+  display: grid;
+  gap: 10px;
+}
+
+body.auth-locked .auth-box input,
+body.auth-locked .auth-btn {
+  width: 100%;
+}
+
 .eyebrow {
   margin: 0 0 3px;
   color: var(--brand);
