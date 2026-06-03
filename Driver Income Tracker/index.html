@@ -14,6 +14,13 @@
           <h1 id="pageTitle">每日目标</h1>
         </div>
         <div class="top-actions">
+          <div class="auth-box" id="authBox">
+            <input class="hidden" id="authUsername" type="text" autocomplete="username" placeholder="Username">
+            <input class="hidden" id="authPassword" type="password" autocomplete="current-password" placeholder="Password">
+            <button class="icon-button auth-btn hidden" id="authLoginBtn" type="button">Login</button>
+            <button class="icon-button auth-btn hidden" id="authLogoutBtn" type="button">Logout</button>
+            <span class="auth-status" id="authStatus">Local</span>
+          </div>
           <button class="icon-button" id="languageToggleBtn" type="button" title="Change language" aria-label="Change language">
             <span aria-hidden="true">EN</span>
           </button>
@@ -206,6 +213,8 @@
       <button id="nav-monthly" data-page="monthly" data-title-key="titleMonth" type="button">月份</button>
     </nav>
 
+    <script src="/api/config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="app.js"></script>
   </body>
 </html>

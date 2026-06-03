@@ -4,8 +4,13 @@
   const currentMonth = today.slice(0, 7);
   const WEEKLY_RENT_TARGET = 390;
   const MONTHLY_MORTGAGE_TARGET = 4000;
-  const SEEDED_NOTE_VERSION = "manual-notes-2026-06-01";
+  const SEEDED_NOTE_VERSION = "manual-notes-2026-06-03-supabase-fix";
   const LANGUAGE_KEY = "driverClosingTracker.language";
+  const SUPABASE_CONFIG = window.DRIVER_TRACKER_SUPABASE_CONFIG || {};
+  const SUPABASE_SYNC_DELAY = 700;
+  const USERNAME_EMAIL_MAP = {
+    isaac: "keowei1992@gmail.com"
+  };
 
   const fields = [
     "date", "startTime", "endTime", "secondStartTime", "secondEndTime",
@@ -58,6 +63,10 @@
   let editingId = null;
   let editingMovementId = null;
   let isAutoSaving = false;
+  let supabaseClient = null;
+  let supabaseUserId = null;
+  let syncTimer = null;
+  let isSyncing = false;
 
   const copy = {
     zh: {
@@ -188,7 +197,16 @@
       draftSaved: "已自动暂存",
       closedToday: "今天已结束",
       nextBoltPayout: "下次 Bolt payout",
-      paidOn: "预计到账"
+      paidOn: "预计到账",
+      authUsernamePlaceholder: "Username",
+      authPasswordPlaceholder: "Password",
+      authLogin: "登录",
+      authLogout: "退出",
+      authLocal: "本机",
+      authSynced: "已同步",
+      authLoginFailed: "登录失败",
+      authUnknownUser: "Username 不存在",
+      authUnavailable: "云同步未设置"
     },
     en: {
       appEyebrow: "Live driver finance",
@@ -318,7 +336,16 @@
       draftSaved: "Draft saved",
       closedToday: "Today closed",
       nextBoltPayout: "Next Bolt payout",
-      paidOn: "Paid on"
+      paidOn: "Paid on",
+      authUsernamePlaceholder: "Username",
+      authPasswordPlaceholder: "Password",
+      authLogin: "Login",
+      authLogout: "Logout",
+      authLocal: "Local",
+      authSynced: "Synced",
+      authLoginFailed: "Login failed",
+      authUnknownUser: "Unknown username",
+      authUnavailable: "Cloud sync not set"
     }
   };
 
@@ -337,6 +364,8 @@
     $("languageToggleBtn").textContent = currentLanguage === "zh" ? "EN" : "中";
     $("exportExcelBtn").title = currentLanguage === "zh" ? "导出 Excel" : "Export Excel";
     $("exportExcelBtn").setAttribute("aria-label", $("exportExcelBtn").title);
+    $("authUsername").placeholder = t("authUsernamePlaceholder");
+    $("authPassword").placeholder = t("authPasswordPlaceholder");
 
     const activeNav = document.querySelector(".bottom-nav button.active");
     $("pageTitle").textContent = activeNav ? t(activeNav.dataset.titleKey) : t("titleDaily");
@@ -377,6 +406,7 @@
     $("nav-monthly").textContent = t("navMonth");
 
     renderAll();
+    updateAuthUi();
   }
 
   const $ = (id) => document.getElementById(id);
@@ -396,15 +426,233 @@
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       return {
         records: Array.isArray(saved?.records) ? saved.records : [],
-        movements: Array.isArray(saved?.movements) ? saved.movements : []
+        movements: Array.isArray(saved?.movements) ? saved.movements : [],
+        deletedRecordIds: Array.isArray(saved?.deletedRecordIds) ? saved.deletedRecordIds : [],
+        seededNoteVersion: saved?.seededNoteVersion || "",
+        lastSyncedAt: saved?.lastSyncedAt || ""
       };
     } catch {
-      return { records: [], movements: [] };
+      return { records: [], movements: [], deletedRecordIds: [], seededNoteVersion: "", lastSyncedAt: "" };
     }
   }
 
-  function persist() {
+  function persist(options = {}) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (!options.skipSync) scheduleSupabaseSync();
+  }
+
+  function markUpdated(item) {
+    item.updatedAt = new Date().toISOString();
+    return item;
+  }
+
+  function newerItem(localItem, remoteItem) {
+    const localTime = Date.parse(localItem?.updatedAt || "") || 0;
+    const remoteTime = Date.parse(remoteItem?.updatedAt || "") || 0;
+    return remoteTime > localTime ? remoteItem : localItem;
+  }
+
+  function mergeById(localItems, remoteItems) {
+    const merged = new Map();
+    localItems.forEach((item) => merged.set(item.id, item));
+    remoteItems.forEach((item) => {
+      const current = merged.get(item.id);
+      merged.set(item.id, current ? newerItem(current, item) : item);
+    });
+    return Array.from(merged.values());
+  }
+
+  function supabaseReady() {
+    return Boolean(supabaseClient && supabaseUserId);
+  }
+
+  function scheduleSupabaseSync(delay = SUPABASE_SYNC_DELAY) {
+    if (!supabaseReady()) return;
+    window.clearTimeout(syncTimer);
+    syncTimer = window.setTimeout(syncSupabaseState, delay);
+  }
+
+  async function initSupabaseSync() {
+    const url = SUPABASE_CONFIG.url;
+    const anonKey = SUPABASE_CONFIG.anonKey;
+    if (!url || !anonKey || !window.supabase?.createClient) {
+      updateAuthUi(t("authUnavailable"));
+      return;
+    }
+
+    try {
+      supabaseClient = window.supabase.createClient(url, anonKey, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true
+        }
+      });
+
+      supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+        supabaseUserId = session?.user?.id || null;
+        updateAuthUi();
+        if (supabaseUserId) {
+          await pullSupabaseState();
+          scheduleSupabaseSync(0);
+        }
+      });
+
+      const sessionResult = await supabaseClient.auth.getSession();
+      const session = sessionResult.data?.session;
+
+      supabaseUserId = session?.user?.id || null;
+      updateAuthUi();
+      if (!supabaseUserId) return;
+
+      await pullSupabaseState();
+      scheduleSupabaseSync(0);
+    } catch (error) {
+      console.warn("Supabase sync unavailable. Local storage is still active.", error);
+    }
+  }
+
+  function rowPayload(row) {
+    return { ...(row.payload || {}), id: row.payload?.id || row.id, updatedAt: row.payload?.updatedAt || row.updated_at };
+  }
+
+  async function pullSupabaseState() {
+    if (!supabaseReady()) return;
+
+    const [recordResult, movementResult, metaResult] = await Promise.all([
+      supabaseClient.from("daily_records").select("id,date,payload,updated_at"),
+      supabaseClient.from("cash_movements").select("id,date,payload,updated_at"),
+      supabaseClient.from("app_meta").select("key,payload").eq("key", "state").maybeSingle()
+    ]);
+
+    if (recordResult.error) throw recordResult.error;
+    if (movementResult.error) throw movementResult.error;
+    if (metaResult.error) throw metaResult.error;
+
+    const remoteMeta = metaResult.data?.payload || {};
+    const deletedRecordIds = Array.from(new Set([
+      ...(state.deletedRecordIds || []),
+      ...(remoteMeta.deletedRecordIds || [])
+    ]));
+    const deletedSet = new Set(deletedRecordIds);
+    const remoteRecords = (recordResult.data || []).map(rowPayload).filter((record) => !deletedSet.has(record.id));
+    const remoteMovements = (movementResult.data || []).map(rowPayload);
+
+    state.records = mergeById(state.records, remoteRecords)
+      .filter((record) => !deletedSet.has(record.id))
+      .sort((a, b) => b.date.localeCompare(a.date));
+    state.movements = mergeById(state.movements, remoteMovements)
+      .sort((a, b) => b.date.localeCompare(a.date));
+    state.deletedRecordIds = deletedRecordIds;
+    state.seededNoteVersion = state.seededNoteVersion || remoteMeta.seededNoteVersion || "";
+    state.lastSyncedAt = remoteMeta.lastSyncedAt || state.lastSyncedAt || "";
+    persist({ skipSync: true });
+    renderAll();
+  }
+
+  async function syncSupabaseState() {
+    if (!supabaseReady() || isSyncing) return;
+    isSyncing = true;
+    try {
+      const now = new Date().toISOString();
+      const recordRows = state.records.map((record) => ({
+        id: record.id,
+        owner_id: supabaseUserId,
+        date: record.date,
+        payload: record,
+        updated_at: record.updatedAt || now
+      }));
+      const movementRows = state.movements.map((movement) => ({
+        id: movement.id,
+        owner_id: supabaseUserId,
+        date: movement.date,
+        payload: movement,
+        updated_at: movement.updatedAt || now
+      }));
+
+      if (recordRows.length) {
+        const result = await supabaseClient.from("daily_records").upsert(recordRows, { onConflict: "id" });
+        if (result.error) throw result.error;
+      }
+      if (movementRows.length) {
+        const result = await supabaseClient.from("cash_movements").upsert(movementRows, { onConflict: "id" });
+        if (result.error) throw result.error;
+      }
+
+      await deleteSupabaseRecords(state.deletedRecordIds || []);
+      const metaResult = await supabaseClient.from("app_meta").upsert({
+        owner_id: supabaseUserId,
+        key: "state",
+        payload: {
+          seededNoteVersion: state.seededNoteVersion,
+          deletedRecordIds: state.deletedRecordIds || [],
+          lastSyncedAt: now
+        }
+      }, { onConflict: "owner_id,key" });
+      if (metaResult.error) throw metaResult.error;
+
+      state.lastSyncedAt = now;
+      persist({ skipSync: true });
+    } catch (error) {
+      console.warn("Supabase sync failed. Changes remain saved locally.", error);
+    } finally {
+      isSyncing = false;
+    }
+  }
+
+  async function deleteSupabaseRecords(ids) {
+    if (!supabaseReady() || !ids.length) return;
+    const result = await supabaseClient.from("daily_records").delete().in("id", ids);
+    if (result.error) throw result.error;
+  }
+
+  function updateAuthUi(message = "") {
+    const usernameInput = $("authUsername");
+    const passwordInput = $("authPassword");
+    const loginButton = $("authLoginBtn");
+    const logoutButton = $("authLogoutBtn");
+    const status = $("authStatus");
+    if (!usernameInput || !passwordInput || !loginButton || !logoutButton || !status) return;
+
+    const isLoggedIn = Boolean(supabaseUserId);
+    usernameInput.classList.toggle("hidden", isLoggedIn);
+    passwordInput.classList.toggle("hidden", isLoggedIn);
+    loginButton.classList.toggle("hidden", isLoggedIn);
+    logoutButton.classList.toggle("hidden", !isLoggedIn);
+    loginButton.textContent = t("authLogin");
+    logoutButton.textContent = t("authLogout");
+    status.textContent = message || (isLoggedIn ? t("authSynced") : t("authLocal"));
+  }
+
+  async function loginWithPassword() {
+    if (!supabaseClient) {
+      updateAuthUi(t("authUnavailable"));
+      return;
+    }
+    const username = $("authUsername").value.trim().toLowerCase();
+    const password = $("authPassword").value;
+    const email = USERNAME_EMAIL_MAP[username];
+    if (!email) {
+      updateAuthUi(t("authUnknownUser"));
+      return;
+    }
+    if (!password) return;
+
+    try {
+      const result = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (result.error) throw result.error;
+      $("authPassword").value = "";
+    } catch (error) {
+      console.warn("Password login failed.", error);
+      updateAuthUi(t("authLoginFailed"));
+    }
+  }
+
+  async function signOut() {
+    if (!supabaseClient) return;
+    await supabaseClient.auth.signOut();
+    supabaseUserId = null;
+    updateAuthUi();
   }
 
   function dailyDefaults() {
@@ -456,7 +704,7 @@
         endTime: "",
         secondStartTime: "",
         secondEndTime: "",
-        platformMode: "both",
+        platformMode: "bolt",
         jobs: 0,
         grabWallet: 2184.32,
         grabCash: 0,
@@ -465,11 +713,14 @@
         boltWallet: 1969.03,
         boltCash: 0,
         boltTng: 0,
+        totalCashCollected: 0,
+        totalTngCollected: 0,
         petrolCost: 0,
         tngCost: 0,
         insuranceCost: 0,
         otherCost: 1747.25,
-        notes: "Opening balance from phone notes before 30 May 2026. Sales RM4323.35, cost RM1747.25, net RM2576.10."
+        status: "closed",
+        notes: "Opening balance from phone notes before 30 May 2026. Grand refund Grab RM170. Grand sales RM4323.35, cost RM1747.25, net RM2576.10."
       },
       {
         id: "seed-daily-2026-05-30",
@@ -487,17 +738,24 @@
         boltWallet: 18.01,
         boltCash: 80,
         boltTng: 0,
+        totalCashCollected: 80,
+        totalTngCollected: 0,
         petrolCost: 39.03,
         tngCost: 11.42,
         insuranceCost: 0,
         otherCost: 0,
-      tngEwalletStart: 180.04,
-      tngEwalletEnd: 179.04,
-      tngCardStart: "",
-      tngCardEnd: "",
+        tngEwalletStart: "",
+        tngEwalletEnd: "",
+        tngCardStart: 180.04,
+        tngCardEnd: 179.04,
+        grabCashWalletStart: 340.11,
+        grabCashWalletEnd: 347.41,
+        grabCreditWalletStart: 2.82,
+        grabCreditWalletEnd: 2.82,
         boltWalletStart: 124.64,
         boltWalletEnd: 142.65,
-      notes: "Bolt 8 jobs. SmartTAG/toll cost RM11.42, petrol RM39.03."
+        status: "closed",
+        notes: "Bolt 8 jobs. 6am to 11am. Bolt wallet RM124.64 to RM142.65. Cash RM80. TNG eWallet negative RM10.42 treated as cost, Touchngo RM180.04 to RM179.04 cost RM1. Petrol RM39.03. Total cost RM50.45, Bolt sales RM98.01."
       },
       {
         id: "seed-daily-2026-05-31",
@@ -515,15 +773,24 @@
         boltWallet: 168.85,
         boltCash: 127,
         boltTng: 105.75,
+        totalCashCollected: 127,
+        totalTngCollected: 105.75,
         petrolCost: 58.56,
         tngCost: 6.64,
         insuranceCost: 0,
         otherCost: 0,
-        tngEwalletStart: 179.04,
-        tngEwalletEnd: 172.40,
+        tngEwalletStart: "",
+        tngEwalletEnd: "",
+        tngCardStart: 179.04,
+        tngCardEnd: 172.40,
+        grabCashWalletStart: 340.11,
+        grabCashWalletEnd: 347.41,
+        grabCreditWalletStart: 2.82,
+        grabCreditWalletEnd: 2.82,
         boltWalletStart: 142.65,
         boltWalletEnd: 311.50,
-        notes: "Bolt 18 jobs. Petrol RM37.15 + RM11.46 + RM9.95. Bolt wallet paid on 1 June."
+        status: "closed",
+        notes: "Bolt 18 jobs. 6.15am to 6.15pm. Bolt wallet RM142.65 to RM311.50. Cash RM127, TNG E-Wallet received RM105.75. SmartTAG/Touchngo RM179.04 to RM172.40 cost RM6.64. Petrol RM37.15 + RM11.46 + RM9.95 = RM58.56. Total cost RM65.20, Bolt sales RM401.60."
       },
       {
         id: "seed-daily-2026-06-01",
@@ -541,15 +808,49 @@
         boltWallet: 61.83,
         boltCash: 131,
         boltTng: 0,
+        totalCashCollected: 131,
+        totalTngCollected: 0,
         petrolCost: 54.34,
         tngCost: 26.46,
         insuranceCost: 0,
         otherCost: 0,
-        tngEwalletStart: 172.40,
-        tngEwalletEnd: 151.49,
+        tngEwalletStart: "",
+        tngEwalletEnd: "",
+        tngCardStart: 172.40,
+        tngCardEnd: 151.49,
+        grabCashWalletStart: 340.11,
+        grabCashWalletEnd: 347.41,
+        grabCreditWalletStart: 2.82,
+        grabCreditWalletEnd: 2.82,
         boltWalletStart: 0,
         boltWalletEnd: 61.83,
-        notes: "Bolt 6 jobs. TNG card cost RM20.91 and TNG eWallet negative RM5.55. Petrol RM12.09 + RM42.25."
+        status: "closed",
+        notes: "Bolt 6 jobs. 6.15am to 9.15am and 2pm to 4pm. Bolt wallet RM0 to RM61.83, payable on 8 June by weekly payout habit. Cash RM131. TNG E-Wallet negative RM5.55 plus SmartTAG/Touchngo RM172.40 to RM151.49 cost RM20.91. Petrol RM12.09 + RM42.25 = RM54.34. Bank in RM1600 recorded separately. Total cost RM80.80, Bolt sales RM192.83."
+      },
+      {
+        id: "seed-daily-2026-06-02",
+        date: "2026-06-02",
+        startTime: "",
+        endTime: "",
+        secondStartTime: "",
+        secondEndTime: "",
+        platformMode: "bolt",
+        jobs: 0,
+        grabWallet: 0,
+        grabCash: 0,
+        grabTng: 0,
+        grabRefund: 0,
+        boltWallet: 0,
+        boltCash: 0,
+        boltTng: 0,
+        totalCashCollected: 0,
+        totalTngCollected: 0,
+        petrolCost: 0,
+        tngCost: 0,
+        insuranceCost: 0,
+        otherCost: 0,
+        status: "draft",
+        notes: "Placeholder from phone note: 2 June 2026 Bolt, data not completed yet."
       }
     ];
 
@@ -593,7 +894,11 @@
 
     let changed = false;
     seedRecords.forEach((record) => {
-      if (!state.records.some((item) => item.id === record.id || item.date === record.date)) {
+      const existingIndex = state.records.findIndex((item) => item.id === record.id || item.date === record.date);
+      if (existingIndex >= 0 && state.seededNoteVersion !== SEEDED_NOTE_VERSION) {
+        state.records[existingIndex] = { ...dailyDefaults(), ...state.records[existingIndex], ...record };
+        changed = true;
+      } else if (existingIndex < 0) {
         state.records.push({ ...dailyDefaults(), ...record });
         changed = true;
       }
@@ -796,14 +1101,19 @@
   }
 
   function upsertRecord(record) {
+    markUpdated(record);
     const existingIndex = state.records.findIndex((item) => item.id === record.id);
     const sameDateIndex = state.records.findIndex((item) => item.date === record.date && item.id !== record.id);
-    if (sameDateIndex >= 0) state.records.splice(sameDateIndex, 1);
+    if (sameDateIndex >= 0) {
+      const removed = state.records.splice(sameDateIndex, 1)[0];
+      if (removed?.id) state.deletedRecordIds = Array.from(new Set([...(state.deletedRecordIds || []), removed.id]));
+    }
     if (existingIndex >= 0) {
       state.records[existingIndex] = record;
     } else {
       state.records.push(record);
     }
+    state.deletedRecordIds = (state.deletedRecordIds || []).filter((id) => id !== record.id);
     state.records.sort((a, b) => b.date.localeCompare(a.date));
     editingId = record.id;
     persist();
@@ -902,7 +1212,10 @@
   function deleteDailyRecord() {
     if (!editingId) return;
     const index = state.records.findIndex((record) => record.id === editingId);
-    if (index >= 0) state.records.splice(index, 1);
+    if (index >= 0) {
+      const removed = state.records.splice(index, 1)[0];
+      if (removed?.id) state.deletedRecordIds = Array.from(new Set([...(state.deletedRecordIds || []), removed.id]));
+    }
     persist();
     resetDailyForm();
     renderAll();
@@ -1087,13 +1400,13 @@
 
   function saveMovement(event) {
     event.preventDefault();
-    const movement = {
+    const movement = markUpdated({
       id: editingMovementId || uid(),
       date: $("movementDate").value || today,
       type: $("movementType").value,
       amount: num($("movementAmount").value),
       notes: $("movementNotes").value
-    };
+    });
     const existingIndex = state.movements.findIndex((item) => item.id === movement.id);
     if (existingIndex >= 0) state.movements[existingIndex] = movement;
     else state.movements.push(movement);
@@ -1220,7 +1533,24 @@
   }
 
   function renderRecordPicker() {
-    $("recordPicker").innerHTML = `<option value="">${t("editPast")}</option>` + state.records.map((record) => {
+    const byDate = new Map(state.records.map((record) => [record.date, record]));
+    const dates = [];
+    const earliest = state.records.length
+      ? state.records.reduce((min, record) => record.date < min ? record.date : min, state.records[0].date)
+      : today;
+    let date = parseDate(earliest);
+    const end = today > earliest ? today : earliest;
+    while (dateKey(date) <= end) {
+      dates.push(dateKey(date));
+      date.setDate(date.getDate() + 1);
+    }
+    dates.reverse();
+    $("recordPicker").innerHTML = `<option value="">${t("editPast")}</option>` + dates.map((dateText) => {
+      const record = byDate.get(dateText);
+      if (!record) {
+        const label = currentLanguage === "zh" ? "未填写" : "empty";
+        return `<option value="date:${dateText}">${escapeHtml(dateText)} - ${label}</option>`;
+      }
       const totals = calculate(record);
       return `<option value="${record.id}">${escapeHtml(record.date)} - ${formatMoney(totals.net)}</option>`;
     }).join("");
@@ -1240,18 +1570,43 @@
   }
 
   function exportExcel() {
-    const dailyRows = state.records.map((record) => {
+    const records = [...state.records].sort((a, b) => a.date.localeCompare(b.date));
+    const dailyRows = records.map((record) => {
       const totals = calculate(record);
+      const recordsToDate = records.filter((item) => item.date <= record.date);
+      const movementsToDate = state.movements.filter((movement) => movement.date <= record.date);
+      const cumulative = grandTotals(recordsToDate, movementsToDate);
       return [
         record.date,
+        record.status || "",
         record.startTime,
         record.endTime,
         record.secondStartTime,
         record.secondEndTime,
         record.platformMode,
         record.jobs,
+        record.tngEwalletStart,
+        record.tngEwalletEnd,
+        record.tngCardStart,
+        record.tngCardEnd,
+        record.grabCashWalletStart,
+        record.grabCashWalletEnd,
+        record.grabCreditWalletStart,
+        record.grabCreditWalletEnd,
+        record.boltWalletStart,
+        record.boltWalletEnd,
+        record.grabWallet,
+        record.boltWallet,
         record.totalCashCollected,
         record.totalTngCollected,
+        record.grabRefund,
+        record.extraBonus,
+        record.extraCost,
+        record.extraNotes,
+        record.petrolCost,
+        record.tngCost,
+        totals.insuranceCost.toFixed(2),
+        record.otherCost,
         totals.hours.toFixed(2),
         totals.grabSales.toFixed(2),
         totals.boltSales.toFixed(2),
@@ -1259,13 +1614,17 @@
         totals.totalCost.toFixed(2),
         totals.net.toFixed(2),
         totals.hourly.toFixed(2),
-        record.petrolCost,
-        record.tngCost,
-        record.insuranceCost,
-        record.otherCost,
-        record.extraBonus,
-        record.extraCost,
-        record.extraNotes,
+        cumulative.grab.toFixed(2),
+        cumulative.bolt.toFixed(2),
+        cumulative.refund.toFixed(2),
+        cumulative.sales.toFixed(2),
+        cumulative.cost.toFixed(2),
+        cumulative.net.toFixed(2),
+        cumulative.bankIn ? cumulative.bankIn.toFixed(2) : "0.00",
+        cumulative.walletPayout ? cumulative.walletPayout.toFixed(2) : "0.00",
+        cumulative.cashWithdraw ? cumulative.cashWithdraw.toFixed(2) : "0.00",
+        cumulative.banked.toFixed(2),
+        cumulative.cashBalance.toFixed(2),
         WEEKLY_RENT_TARGET.toFixed(2),
         MONTHLY_MORTGAGE_TARGET.toFixed(2),
         weeklyTargetForMonth(record.date.slice(0, 7)).toFixed(2),
@@ -1278,6 +1637,7 @@
       Number(movement.amount || 0).toFixed(2),
       movement.notes
     ]);
+    const total = grandTotals(records, state.movements);
     const workbookHtml = `
       <!doctype html>
       <html>
@@ -1294,12 +1654,30 @@
         </head>
         <body>
           <h1>Driver Daily Closing Tracker</h1>
+          ${tableHtml("Grand Total Summary", ["Item", "Amount"], [
+            ["Grand Total Sales", total.sales.toFixed(2)],
+            ["Grand Total Cost", total.cost.toFixed(2)],
+            ["Net Income", total.net.toFixed(2)],
+            ["Grand Total Sales by Grab", total.grab.toFixed(2)],
+            ["Grand Total Sales by Bolt", total.bolt.toFixed(2)],
+            ["Grand Total Refund", total.refund.toFixed(2)],
+            ["Total Withdraw", (total.cashWithdraw || 0).toFixed(2)],
+            ["Total Wallet Paid", (total.walletPayout || 0).toFixed(2)],
+            ["Current Cash Balance", total.cashBalance.toFixed(2)],
+            ["Current Banked In Amount", total.banked.toFixed(2)]
+          ])}
           ${tableHtml("Daily Records", [
-            "Date", "Start", "End", "Second Start", "Second End", "Platform", "Jobs",
-            "Total Cash Collected", "Total TNG E-Wallet Collected",
-            "Hours", "Grab Sales", "Bolt Sales", "Total Sales", "Total Cost",
-            "Net Income", "Net Per Hour", "Petrol", "SmartTAG Balance", "Insurance",
-            "Other Cost", "Extra Bonus", "Extra Cost", "Extra Notes", "Weekly Rent Target", "Monthly Mortgage Target",
+            "Date", "Status", "Start", "End", "Second Start", "Second End", "Platform", "Jobs",
+            "TNG E-Wallet Start", "TNG E-Wallet End", "Smart Tag Start", "Smart Tag End",
+            "Grab Cash Wallet Start", "Grab Cash Wallet End", "Grab Credit Wallet Start", "Grab Credit Wallet End",
+            "Bolt Wallet Start", "Bolt Wallet End", "Grab Wallet Profit/Loss", "Bolt Wallet Profit/Loss",
+            "Cash Collected Total", "TNG E-Wallet Collected Total", "Grab Refund",
+            "Extra Bonus", "Extra Cost", "Extra Notes", "Petrol", "SmartTAG / Toll Cost", "Insurance",
+            "Other Cost", "Hours", "Grab Sales Today", "Bolt Sales Today", "Total Sales Today", "Total Cost Today",
+            "Net Income Today", "Net Per Hour Today", "Cumulative Grab Sales", "Cumulative Bolt Sales",
+            "Cumulative Refund", "Cumulative Total Sales", "Cumulative Total Cost", "Cumulative Net Income",
+            "Cumulative Bank In", "Cumulative Wallet Payout", "Cumulative Cash Withdraw",
+            "Cumulative Banked In", "Current Cash Balance", "Weekly Rent Target", "Monthly Mortgage Target",
             "Suggested Weekly Net Target", "Notes"
           ], dailyRows)}
           ${tableHtml("Cash Movements", ["Date", "Type", "Amount", "Notes"], movementRows)}
@@ -1342,6 +1720,14 @@
     $("deleteRecordBtn").addEventListener("click", deleteDailyRecord);
     $("endDayBtn").addEventListener("click", endToday);
     $("exportExcelBtn").addEventListener("click", exportExcel);
+    $("authLoginBtn").addEventListener("click", loginWithPassword);
+    $("authLogoutBtn").addEventListener("click", signOut);
+    ["authUsername", "authPassword"].forEach((id) => $(id).addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        loginWithPassword();
+      }
+    }));
     $("languageToggleBtn").addEventListener("click", () => {
       currentLanguage = currentLanguage === "zh" ? "en" : "zh";
       localStorage.setItem(LANGUAGE_KEY, currentLanguage);
@@ -1350,6 +1736,13 @@
     $("monthFilter").addEventListener("input", renderMonthly);
     $("cashForm").addEventListener("submit", saveMovement);
     $("recordPicker").addEventListener("change", (event) => {
+      if (event.target.value.startsWith("date:")) {
+        const record = { ...dailyDefaults(), id: uid(), date: event.target.value.slice(5) };
+        fillDailyForm(record);
+        editingId = null;
+        $("deleteRecordBtn").disabled = true;
+        return;
+      }
       const record = state.records.find((item) => item.id === event.target.value);
       if (record) fillDailyForm(record);
     });
@@ -1383,4 +1776,5 @@
   resetDailyForm();
   initEvents();
   applyLanguage();
+  initSupabaseSync();
 })();
