@@ -68,6 +68,7 @@
   let syncTimer = null;
   let isSyncing = false;
   let isAppUnlocked = false;
+  let authEpoch = 0;
 
   const copy = {
     zh: {
@@ -471,6 +472,8 @@
   }
 
   function lockPrivateApp() {
+    authEpoch += 1;
+    window.clearTimeout(syncTimer);
     isAppUnlocked = false;
     replaceState(emptyState());
     editingId = null;
@@ -534,13 +537,14 @@
 
       supabaseClient.auth.onAuthStateChange(async (_event, session) => {
         supabaseUserId = session?.user?.id || null;
-        updateAuthUi();
         if (supabaseUserId) {
           unlockPrivateApp();
+          updateAuthUi();
           await pullSupabaseState();
           scheduleSupabaseSync(0);
         } else {
           lockPrivateApp();
+          updateAuthUi();
         }
       });
 
@@ -548,14 +552,20 @@
       const session = sessionResult.data?.session;
 
       supabaseUserId = session?.user?.id || null;
-      updateAuthUi();
-      if (!supabaseUserId) return;
+      if (!supabaseUserId) {
+        lockPrivateApp();
+        updateAuthUi();
+        return;
+      }
 
       unlockPrivateApp();
+      updateAuthUi();
       await pullSupabaseState();
       scheduleSupabaseSync(0);
     } catch (error) {
       console.warn("Supabase sync unavailable. Local storage is still active.", error);
+      lockPrivateApp();
+      updateAuthUi(t("authUnavailable"));
     }
   }
 
@@ -565,6 +575,8 @@
 
   async function pullSupabaseState() {
     if (!supabaseReady()) return;
+    const requestEpoch = authEpoch;
+    const requestUserId = supabaseUserId;
 
     const [recordResult, movementResult, metaResult] = await Promise.all([
       supabaseClient.from("daily_records").select("id,date,payload,updated_at"),
@@ -575,6 +587,7 @@
     if (recordResult.error) throw recordResult.error;
     if (movementResult.error) throw movementResult.error;
     if (metaResult.error) throw metaResult.error;
+    if (!isAppUnlocked || requestEpoch !== authEpoch || requestUserId !== supabaseUserId) return;
 
     const remoteMeta = metaResult.data?.payload || {};
     const deletedRecordIds = Array.from(new Set([
@@ -600,19 +613,21 @@
 
   async function syncSupabaseState() {
     if (!supabaseReady() || isSyncing) return;
+    const requestEpoch = authEpoch;
+    const requestUserId = supabaseUserId;
     isSyncing = true;
     try {
       const now = new Date().toISOString();
       const recordRows = state.records.map((record) => ({
         id: record.id,
-        owner_id: supabaseUserId,
+        owner_id: requestUserId,
         date: record.date,
         payload: record,
         updated_at: record.updatedAt || now
       }));
       const movementRows = state.movements.map((movement) => ({
         id: movement.id,
-        owner_id: supabaseUserId,
+        owner_id: requestUserId,
         date: movement.date,
         payload: movement,
         updated_at: movement.updatedAt || now
@@ -627,9 +642,10 @@
         if (result.error) throw result.error;
       }
 
+      if (!isAppUnlocked || requestEpoch !== authEpoch || requestUserId !== supabaseUserId) return;
       await deleteSupabaseRecords(state.deletedRecordIds || []);
       const metaResult = await supabaseClient.from("app_meta").upsert({
-        owner_id: supabaseUserId,
+        owner_id: requestUserId,
         key: "state",
         payload: {
           seededNoteVersion: state.seededNoteVersion,
@@ -697,11 +713,18 @@
   }
 
   async function signOut() {
-    if (!supabaseClient) return;
-    await supabaseClient.auth.signOut();
+    const client = supabaseClient;
     supabaseUserId = null;
     lockPrivateApp();
     updateAuthUi();
+    if (!client) return;
+    try {
+      const result = await client.auth.signOut();
+      if (result?.error) throw result.error;
+    } catch (error) {
+      console.warn("Supabase sign out failed. Private UI is already locked locally.", error);
+      updateAuthUi(currentLanguage === "zh" ? "已锁定，本机已隐藏资料" : "Locked locally");
+    }
   }
 
   function dailyDefaults() {
