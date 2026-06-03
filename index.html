@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>每日收入记录</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="appEyebrow">收入目标</p>
+          <h1 id="pageTitle">每日目标</h1>
+        </div>
+        <div class="top-actions">
+          <div class="auth-box" id="authBox">
+            <input class="hidden" id="authUsername" type="text" autocomplete="username" placeholder="Username">
+            <input class="hidden" id="authPassword" type="password" autocomplete="current-password" placeholder="Password">
+            <button class="icon-button auth-btn hidden" id="authLoginBtn" type="button">Login</button>
+            <button class="icon-button auth-btn hidden" id="authLogoutBtn" type="button">Logout</button>
+            <span class="auth-status" id="authStatus">Local</span>
+          </div>
+          <button class="icon-button" id="languageToggleBtn" type="button" title="Change language" aria-label="Change language">
+            <span aria-hidden="true">EN</span>
+          </button>
+          <button class="icon-button" id="exportExcelBtn" type="button" title="导出 Excel" aria-label="导出 Excel">
+            <span aria-hidden="true">XLS</span>
+          </button>
+        </div>
+      </header>
+
+      <main>
+        <section class="page active" id="page-closing" aria-labelledby="nav-closing">
+          <form id="dailyForm" class="stack">
+            <div class="overview-grid" id="incomeOverview"></div>
+            <div class="goal-grid" id="dashboardGoals"></div>
+            <div class="week-alert" id="weekAlert"></div>
+
+            <div class="action-row">
+              <button class="secondary-btn" id="newRecordBtn" type="button">新一天</button>
+              <button class="secondary-btn" id="duplicateBtn" type="button">复制昨天格式</button>
+              <select id="recordPicker" aria-label="编辑旧记录">
+                <option value="">编辑旧记录</option>
+              </select>
+            </div>
+
+            <section class="card">
+              <h2 id="shiftTitle">工作时间</h2>
+              <div class="field-grid">
+                <label><span id="dateLabel">日期</span> <input id="date" name="date" type="date" required></label>
+                <label><span id="startTimeLabel">开始时间</span> <input id="startTime" name="startTime" type="time"></label>
+                <label><span id="endTimeLabel">结束时间</span> <input id="endTime" name="endTime" type="time"></label>
+                <label><span id="secondStartTimeLabel">第二段开始</span> <input id="secondStartTime" name="secondStartTime" type="time"></label>
+                <label><span id="secondEndTimeLabel">第二段结束</span> <input id="secondEndTime" name="secondEndTime" type="time"></label>
+                <label><span id="hoursLabel">总工作小时</span> <input id="hours" name="hours" type="number" min="0" step="0.01" readonly></label>
+              </div>
+              <div class="holiday-pill" id="holidayNote">没有公共假期提醒</div>
+              <label><span id="platformLabel">平台</span>
+                <select id="platformMode" name="platformMode">
+                  <option value="both">Grab and Bolt</option>
+                  <option value="grab">只跑 Grab</option>
+                  <option value="bolt">只跑 Bolt</option>
+                </select>
+              </label>
+              <label><span id="jobsLabel">单数</span> <input id="jobs" name="jobs" type="number" min="0" step="1" inputmode="numeric"></label>
+            </section>
+
+            <section class="card">
+              <div class="card-title-row">
+                <h2 id="balanceTitle">开工 / 收工余额</h2>
+                <button class="secondary-btn small-btn" id="applyBalancesBtn" type="button">计算今天</button>
+              </div>
+              <p class="helper-text" id="balanceHelp">只输入你看到的余额。如果开工余额空着，系统会用最近一次保存的收工余额来算。</p>
+              <div class="balance-column-heads">
+                <span id="startColumnLabel">开工</span>
+                <span id="endColumnLabel">收工</span>
+              </div>
+              <div class="field-grid">
+                <label><span>TNG eWallet</span> <input id="tngEwalletStart" name="tngEwalletStart" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span>TNG eWallet</span> <input id="tngEwalletEnd" name="tngEwalletEnd" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span id="smartTagCardLabel">Smart Tag 实体卡</span> <input id="tngCardStart" name="tngCardStart" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span id="smartTagCardEndLabel">Smart Tag 实体卡</span> <input id="tngCardEnd" name="tngCardEnd" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span>Grab cash wallet</span> <input id="grabCashWalletStart" name="grabCashWalletStart" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span>Grab cash wallet</span> <input id="grabCashWalletEnd" name="grabCashWalletEnd" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span>Grab credit wallet</span> <input id="grabCreditWalletStart" name="grabCreditWalletStart" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span>Grab credit wallet</span> <input id="grabCreditWalletEnd" name="grabCreditWalletEnd" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span>Bolt wallet</span> <input id="boltWalletStart" name="boltWalletStart" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span>Bolt wallet</span> <input id="boltWalletEnd" name="boltWalletEnd" type="number" step="0.01" inputmode="decimal"></label>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2 id="receivedTitle">今日收到</h2>
+              <div class="field-grid">
+                <label><span id="totalCashCollectedLabel">现金总数</span> <input id="totalCashCollected" name="totalCashCollected" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span id="totalTngCollectedLabel">TNG E-Wallet 总数</span> <input id="totalTngCollected" name="totalTngCollected" type="number" step="0.01" inputmode="decimal"></label>
+              </div>
+              <input id="grabWallet" name="grabWallet" type="hidden">
+              <input id="boltWallet" name="boltWallet" type="hidden">
+              <input id="grabCash" name="grabCash" type="hidden">
+              <input id="grabTng" name="grabTng" type="hidden">
+              <input id="grabRefund" name="grabRefund" type="hidden">
+              <input id="boltCash" name="boltCash" type="hidden">
+              <input id="boltTng" name="boltTng" type="hidden">
+            </section>
+
+            <section class="card">
+              <h2 id="costsTitle">成本</h2>
+              <div class="field-grid">
+                <label><span id="petrolCostLabel">打油</span> <input id="petrolCost" name="petrolCost" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span id="tngCostLabel">SmartTAG Balance</span> <input id="tngCost" name="tngCost" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span id="insuranceCostLabel">保险</span> <input id="insuranceCost" name="insuranceCost" type="number" step="0.01" inputmode="decimal" readonly></label>
+                <label><span id="otherCostLabel">其他成本</span> <input id="otherCost" name="otherCost" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span id="extraBonusLabel">Extra Bonus</span> <input id="extraBonus" name="extraBonus" type="number" step="0.01" inputmode="decimal"></label>
+                <label><span id="extraCostLabel">Extra Cost</span> <input id="extraCost" name="extraCost" type="number" step="0.01" inputmode="decimal"></label>
+              </div>
+              <label><span id="extraNotesLabel">额外备注</span> <textarea id="extraNotes" name="extraNotes" rows="3"></textarea></label>
+            </section>
+
+            <section class="card">
+              <h2 id="notesTitle">备注</h2>
+              <textarea id="notes" name="notes" rows="4"></textarea>
+            </section>
+
+            <section class="card">
+              <h2 id="todaySummaryTitle">今天总结</h2>
+              <div class="summary-grid compact">
+                <article class="metric primary profit">
+                  <span id="todaySalesLabel">今天总收入</span>
+                  <strong id="todaySales">RM 0.00</strong>
+                </article>
+                <article class="metric profit">
+                  <span id="todayNetLabel">今天净收入</span>
+                  <strong id="todayNet">RM 0.00</strong>
+                </article>
+                <article class="metric profit">
+                  <span id="todayHourlyLabel">每小时净收入</span>
+                  <strong id="todayHourly">RM 0.00</strong>
+                </article>
+                <article class="metric loss">
+                  <span id="todayCostLabel">今天总成本</span>
+                  <strong id="todayCost">RM 0.00</strong>
+                </article>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2 id="costCategoryTitle">成本分类</h2>
+              <div class="mini-grid">
+                <div class="mini-stat"><span id="petrolBreakdownLabel">打油</span><strong id="petrolBreakdown">RM 0.00</strong></div>
+                <div class="mini-stat"><span id="tngBreakdownLabel">Touch n Go</span><strong id="tngBreakdown">RM 0.00</strong></div>
+                <div class="mini-stat"><span id="insuranceBreakdownLabel">保险</span><strong id="insuranceBreakdown">RM 0.00</strong></div>
+                <div class="mini-stat"><span id="otherBreakdownLabel">其他</span><strong id="otherBreakdown">RM 0.00</strong></div>
+              </div>
+            </section>
+
+              <div class="save-bar">
+                <button class="danger-btn" id="deleteRecordBtn" type="button">删除</button>
+                <button class="primary-btn" id="saveClosingBtn" type="submit">保存今天</button>
+                <button class="secondary-btn" id="endDayBtn" type="button">结束今天</button>
+              </div>
+          </form>
+        </section>
+
+        <section class="page" id="page-dashboard" aria-labelledby="nav-dashboard">
+          <section class="card page-heading">
+            <h2 id="weekTitle">本周</h2>
+            <p class="helper-text" id="weekHelp">本周净收入、车租目标、房贷目标和目前进度。</p>
+          </section>
+          <div class="summary-grid" id="dashboardMetrics"></div>
+        </section>
+
+        <section class="page" id="page-cash" aria-labelledby="nav-cash">
+          <form id="cashForm" class="card stack">
+            <h2 id="cashMovementTitle">现金移动</h2>
+            <label><span id="movementDateLabel">日期</span> <input id="movementDate" name="movementDate" type="date" required></label>
+            <label><span id="movementTypeLabel">类型</span>
+              <select id="movementType" name="movementType">
+                <option value="bankIn">Bank in</option>
+                <option value="walletPayout">钱包 payout 收到</option>
+                <option value="cashWithdraw">现金提出</option>
+                <option value="refundReceived">Refund 收到</option>
+                <option value="manualAdjustment">手动现金调整</option>
+              </select>
+            </label>
+            <label><span id="movementAmountLabel">金额</span> <input id="movementAmount" name="movementAmount" type="number" step="0.01" inputmode="decimal" required></label>
+            <label><span id="movementNotesLabel">备注</span> <textarea id="movementNotes" name="movementNotes" rows="3"></textarea></label>
+            <button class="primary-btn" type="submit" id="saveMovementBtn">保存移动</button>
+          </form>
+          <div class="list" id="movementList"></div>
+        </section>
+
+        <section class="page" id="page-compare" aria-labelledby="nav-compare">
+          <div class="comparison-grid" id="comparisonGrid"></div>
+        </section>
+
+        <section class="page" id="page-monthly" aria-labelledby="nav-monthly">
+          <section class="card">
+            <label><span id="monthFilterLabel">月份</span> <input id="monthFilter" type="month"></label>
+          </section>
+          <div class="goal-grid" id="monthlyGoals"></div>
+          <div class="summary-grid" id="monthlyMetrics"></div>
+        </section>
+      </main>
+    </div>
+
+    <nav class="bottom-nav" aria-label="Main">
+      <button class="active" id="nav-closing" data-page="closing" data-title-key="titleDaily" type="button">今天</button>
+      <button id="nav-dashboard" data-page="dashboard" data-title-key="titleWeek" type="button">本周</button>
+      <button id="nav-cash" data-page="cash" data-title-key="titleCash" type="button">现金</button>
+      <button id="nav-compare" data-page="compare" data-title-key="titleCompare" type="button">比较</button>
+      <button id="nav-monthly" data-page="monthly" data-title-key="titleMonth" type="button">月份</button>
+    </nav>
+
+    <script src="/api/config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
