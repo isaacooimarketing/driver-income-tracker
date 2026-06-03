@@ -464,9 +464,9 @@
     if (isAppUnlocked) return;
     replaceState(loadState());
     seedManualNoteData();
-    resetDailyForm();
     isAppUnlocked = true;
     document.body.classList.remove("auth-locked");
+    restoreDraftOrDefault();
     renderAll();
   }
 
@@ -594,6 +594,7 @@
     state.seededNoteVersion = state.seededNoteVersion || remoteMeta.seededNoteVersion || "";
     state.lastSyncedAt = remoteMeta.lastSyncedAt || state.lastSyncedAt || "";
     persist({ skipSync: true });
+    restoreDraftOrDefault();
     renderAll();
   }
 
@@ -1184,6 +1185,34 @@
     $("recordPicker").value = "";
   }
 
+  function latestDraftRecord() {
+    return state.records
+      .filter((record) => record.status === "draft")
+      .sort((a, b) => {
+        const updated = (Date.parse(b.updatedAt || "") || 0) - (Date.parse(a.updatedAt || "") || 0);
+        return updated || b.date.localeCompare(a.date);
+      })[0] || null;
+  }
+
+  function restoreDraftOrDefault() {
+    const draft = latestDraftRecord();
+    if (draft) fillDailyForm(draft);
+    else resetDailyForm();
+  }
+
+  function startNewRecord() {
+    if (editingId) {
+      const record = state.records.find((item) => item.id === editingId);
+      if (record?.status === "draft") {
+        state.records = state.records.filter((item) => item.id !== editingId);
+        state.deletedRecordIds = Array.from(new Set([...(state.deletedRecordIds || []), editingId]));
+        persist();
+      }
+    }
+    resetDailyForm();
+    renderAll();
+  }
+
   function saveDailyRecord(event) {
     event.preventDefault();
     const record = readDailyForm();
@@ -1210,6 +1239,7 @@
     record.status = "closed";
     record.closedAt = new Date().toISOString();
     upsertRecord(record);
+    resetDailyForm();
     renderAll();
   }
 
@@ -1762,7 +1792,7 @@
     }));
     balanceFields.forEach((field) => $(field).addEventListener("input", applyBalanceDifferences));
     $("dailyForm").addEventListener("submit", saveDailyRecord);
-    $("newRecordBtn").addEventListener("click", resetDailyForm);
+    $("newRecordBtn").addEventListener("click", startNewRecord);
     $("duplicateBtn").addEventListener("click", duplicateYesterday);
     $("applyBalancesBtn").addEventListener("click", applyBalanceDifferences);
     $("deleteRecordBtn").addEventListener("click", deleteDailyRecord);
