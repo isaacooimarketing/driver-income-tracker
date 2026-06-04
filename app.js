@@ -8,6 +8,7 @@
   const LANGUAGE_KEY = "driverClosingTracker.language";
   const SUPABASE_CONFIG = window.DRIVER_TRACKER_SUPABASE_CONFIG || {};
   const SUPABASE_SYNC_DELAY = 700;
+  const SUPABASE_PULL_INTERVAL = 30000;
   const USERNAME_EMAIL_MAP = {
     isaac: "keowei1992@gmail.com"
   };
@@ -66,9 +67,26 @@
   let supabaseClient = null;
   let supabaseUserId = null;
   let syncTimer = null;
+  let pullTimer = null;
   let isSyncing = false;
+  let isPulling = false;
+  let syncAgainAfterCurrent = false;
   let isAppUnlocked = false;
   let authEpoch = 0;
+  let authListenerCount = 0;
+  let logoutClickCount = 0;
+
+  function debugAuth(label, details = {}) {
+    console.log(`[DriverTracker auth] ${label}`, {
+      ...details,
+      supabaseUserId,
+      isAppUnlocked,
+      authEpoch,
+      bodyLocked: document.body.classList.contains("auth-locked"),
+      loginHidden: $("authLoginBtn")?.classList.contains("hidden"),
+      logoutHidden: $("authLogoutBtn")?.classList.contains("hidden")
+    });
+  }
 
   const copy = {
     zh: {
@@ -462,23 +480,29 @@
   }
 
   function unlockPrivateApp() {
+    debugAuth("unlockPrivateApp called");
     if (isAppUnlocked) return;
     replaceState(loadState());
     seedManualNoteData();
     isAppUnlocked = true;
     document.body.classList.remove("auth-locked");
+    debugAuth("auth-locked removed in unlockPrivateApp");
+    startSupabasePulling();
     restoreDraftOrDefault();
     renderAll();
   }
 
   function lockPrivateApp() {
+    debugAuth("lockPrivateApp called");
     authEpoch += 1;
     window.clearTimeout(syncTimer);
+    stopSupabasePulling();
     isAppUnlocked = false;
     replaceState(emptyState());
     editingId = null;
     editingMovementId = null;
     document.body.classList.add("auth-locked");
+    debugAuth("auth-locked added in lockPrivateApp");
     clearPrivateUi();
   }
 
@@ -518,6 +542,30 @@
     syncTimer = window.setTimeout(syncSupabaseState, delay);
   }
 
+  function startSupabasePulling() {
+    if (!supabaseReady() || pullTimer) return;
+    pullTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refreshSupabaseFromCloud();
+    }, SUPABASE_PULL_INTERVAL);
+  }
+
+  function stopSupabasePulling() {
+    window.clearInterval(pullTimer);
+    pullTimer = null;
+  }
+
+  async function syncSupabaseNow() {
+    if (!supabaseReady()) return;
+    window.clearTimeout(syncTimer);
+    await syncSupabaseState();
+  }
+
+  function refreshSupabaseFromCloud() {
+    pullSupabaseState().catch((error) => {
+      console.warn("Supabase refresh failed. Local data is unchanged.", error);
+    });
+  }
+
   async function initSupabaseSync() {
     const url = SUPABASE_CONFIG.url;
     const anonKey = SUPABASE_CONFIG.anonKey;
@@ -535,7 +583,10 @@
         }
       });
 
+      authListenerCount += 1;
+      debugAuth("registering auth listener", { authListenerCount });
       supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+        debugAuth("auth listener fired", { event: _event, hasSession: Boolean(session), sessionUserId: session?.user?.id || null });
         supabaseUserId = session?.user?.id || null;
         if (supabaseUserId) {
           unlockPrivateApp();
@@ -550,6 +601,7 @@
 
       const sessionResult = await supabaseClient.auth.getSession();
       const session = sessionResult.data?.session;
+      debugAuth("getSession completed", { hasSession: Boolean(session), sessionUserId: session?.user?.id || null });
 
       supabaseUserId = session?.user?.id || null;
       if (!supabaseUserId) {
@@ -574,47 +626,61 @@
   }
 
   async function pullSupabaseState() {
-    if (!supabaseReady()) return;
+    if (!supabaseReady() || isPulling) return;
     const requestEpoch = authEpoch;
     const requestUserId = supabaseUserId;
+    debugAuth("pullSupabaseState start", { requestEpoch, requestUserId });
+    isPulling = true;
+    try {
+      const [recordResult, movementResult, metaResult] = await Promise.all([
+        supabaseClient.from("daily_records").select("id,date,payload,updated_at"),
+        supabaseClient.from("cash_movements").select("id,date,payload,updated_at"),
+        supabaseClient.from("app_meta").select("key,payload").eq("key", "state").maybeSingle()
+      ]);
 
-    const [recordResult, movementResult, metaResult] = await Promise.all([
-      supabaseClient.from("daily_records").select("id,date,payload,updated_at"),
-      supabaseClient.from("cash_movements").select("id,date,payload,updated_at"),
-      supabaseClient.from("app_meta").select("key,payload").eq("key", "state").maybeSingle()
-    ]);
+      if (recordResult.error) throw recordResult.error;
+      if (movementResult.error) throw movementResult.error;
+      if (metaResult.error) throw metaResult.error;
+      if (!isAppUnlocked || requestEpoch !== authEpoch || requestUserId !== supabaseUserId) {
+        debugAuth("pullSupabaseState ignored after logout/state change", { requestEpoch, requestUserId });
+        return;
+      }
 
-    if (recordResult.error) throw recordResult.error;
-    if (movementResult.error) throw movementResult.error;
-    if (metaResult.error) throw metaResult.error;
-    if (!isAppUnlocked || requestEpoch !== authEpoch || requestUserId !== supabaseUserId) return;
+      const remoteMeta = metaResult.data?.payload || {};
+      const deletedRecordIds = Array.from(new Set([
+        ...(state.deletedRecordIds || []),
+        ...(remoteMeta.deletedRecordIds || [])
+      ]));
+      const deletedSet = new Set(deletedRecordIds);
+      const remoteRecords = (recordResult.data || []).map(rowPayload).filter((record) => !deletedSet.has(record.id));
+      const remoteMovements = (movementResult.data || []).map(rowPayload);
 
-    const remoteMeta = metaResult.data?.payload || {};
-    const deletedRecordIds = Array.from(new Set([
-      ...(state.deletedRecordIds || []),
-      ...(remoteMeta.deletedRecordIds || [])
-    ]));
-    const deletedSet = new Set(deletedRecordIds);
-    const remoteRecords = (recordResult.data || []).map(rowPayload).filter((record) => !deletedSet.has(record.id));
-    const remoteMovements = (movementResult.data || []).map(rowPayload);
-
-    state.records = mergeById(state.records, remoteRecords)
-      .filter((record) => !deletedSet.has(record.id))
-      .sort((a, b) => b.date.localeCompare(a.date));
-    state.movements = mergeById(state.movements, remoteMovements)
-      .sort((a, b) => b.date.localeCompare(a.date));
-    state.deletedRecordIds = deletedRecordIds;
-    state.seededNoteVersion = state.seededNoteVersion || remoteMeta.seededNoteVersion || "";
-    state.lastSyncedAt = remoteMeta.lastSyncedAt || state.lastSyncedAt || "";
-    persist({ skipSync: true });
-    restoreDraftOrDefault();
-    renderAll();
+      state.records = mergeById(state.records, remoteRecords)
+        .filter((record) => !deletedSet.has(record.id))
+        .sort((a, b) => b.date.localeCompare(a.date));
+      state.movements = mergeById(state.movements, remoteMovements)
+        .sort((a, b) => b.date.localeCompare(a.date));
+      state.deletedRecordIds = deletedRecordIds;
+      state.seededNoteVersion = state.seededNoteVersion || remoteMeta.seededNoteVersion || "";
+      state.lastSyncedAt = remoteMeta.lastSyncedAt || state.lastSyncedAt || "";
+      persist({ skipSync: true });
+      restoreDraftOrDefault();
+      renderAll();
+      debugAuth("pullSupabaseState applied");
+    } finally {
+      isPulling = false;
+    }
   }
 
   async function syncSupabaseState() {
-    if (!supabaseReady() || isSyncing) return;
+    if (!supabaseReady()) return;
+    if (isSyncing) {
+      syncAgainAfterCurrent = true;
+      return;
+    }
     const requestEpoch = authEpoch;
     const requestUserId = supabaseUserId;
+    debugAuth("syncSupabaseState start", { requestEpoch, requestUserId });
     isSyncing = true;
     try {
       const now = new Date().toISOString();
@@ -642,7 +708,10 @@
         if (result.error) throw result.error;
       }
 
-      if (!isAppUnlocked || requestEpoch !== authEpoch || requestUserId !== supabaseUserId) return;
+      if (!isAppUnlocked || requestEpoch !== authEpoch || requestUserId !== supabaseUserId) {
+        debugAuth("syncSupabaseState stopped after logout/state change", { requestEpoch, requestUserId });
+        return;
+      }
       await deleteSupabaseRecords(state.deletedRecordIds || []);
       const metaResult = await supabaseClient.from("app_meta").upsert({
         owner_id: requestUserId,
@@ -657,10 +726,15 @@
 
       state.lastSyncedAt = now;
       persist({ skipSync: true });
+      debugAuth("syncSupabaseState completed");
     } catch (error) {
       console.warn("Supabase sync failed. Changes remain saved locally.", error);
     } finally {
       isSyncing = false;
+      if (syncAgainAfterCurrent && supabaseReady()) {
+        syncAgainAfterCurrent = false;
+        scheduleSupabaseSync(0);
+      }
     }
   }
 
@@ -713,13 +787,22 @@
   }
 
   async function signOut() {
+    logoutClickCount += 1;
+    debugAuth("logout function called", { logoutClickCount });
     const client = supabaseClient;
     supabaseUserId = null;
+    debugAuth("logout before local lock");
     lockPrivateApp();
     updateAuthUi();
+    debugAuth("logout after local lock/updateAuthUi", {
+      usernameHidden: $("authUsername")?.classList.contains("hidden"),
+      passwordHidden: $("authPassword")?.classList.contains("hidden")
+    });
     if (!client) return;
     try {
+      debugAuth("before supabase.auth.signOut()");
       const result = await client.auth.signOut();
+      debugAuth("after supabase.auth.signOut()", { hasError: Boolean(result?.error) });
       if (result?.error) throw result.error;
     } catch (error) {
       console.warn("Supabase sign out failed. Private UI is already locked locally.", error);
@@ -1219,6 +1302,7 @@
 
   function restoreDraftOrDefault() {
     const draft = latestDraftRecord();
+    debugAuth("restoreDraftOrDefault called", { draftId: draft?.id || null, draftDate: draft?.date || null });
     if (draft) fillDailyForm(draft);
     else resetDailyForm();
   }
@@ -1230,18 +1314,20 @@
         state.records = state.records.filter((item) => item.id !== editingId);
         state.deletedRecordIds = Array.from(new Set([...(state.deletedRecordIds || []), editingId]));
         persist();
+        syncSupabaseNow();
       }
     }
     resetDailyForm();
     renderAll();
   }
 
-  function saveDailyRecord(event) {
+  async function saveDailyRecord(event) {
     event.preventDefault();
     const record = readDailyForm();
     record.status = "draft";
     upsertRecord(record);
     renderAll();
+    await syncSupabaseNow();
   }
 
   function autoSaveDraft() {
@@ -1256,7 +1342,7 @@
     isAutoSaving = false;
   }
 
-  function endToday() {
+  async function endToday() {
     applyBalanceDifferences();
     const record = readDailyForm();
     record.status = "closed";
@@ -1264,6 +1350,7 @@
     upsertRecord(record);
     resetDailyForm();
     renderAll();
+    await syncSupabaseNow();
   }
 
   function duplicateYesterday() {
@@ -1320,6 +1407,7 @@
     persist();
     resetDailyForm();
     renderAll();
+    syncSupabaseNow();
   }
 
   function refreshLiveTotals() {
@@ -1499,7 +1587,7 @@
     }[type] || type;
   }
 
-  function saveMovement(event) {
+  async function saveMovement(event) {
     event.preventDefault();
     const movement = markUpdated({
       id: editingMovementId || uid(),
@@ -1517,6 +1605,7 @@
     $("movementDate").value = today;
     persist();
     renderAll();
+    await syncSupabaseNow();
   }
 
   function renderMovements() {
@@ -1798,6 +1887,7 @@
   }
 
   function renderAll() {
+    debugAuth("renderAll called");
     renderIncomeOverview();
     renderRecordPicker();
     renderDashboard();
@@ -1822,7 +1912,9 @@
     $("endDayBtn").addEventListener("click", endToday);
     $("exportExcelBtn").addEventListener("click", exportExcel);
     $("authLoginBtn").addEventListener("click", loginWithPassword);
+    debugAuth("attaching logout click listener", { logoutButtonExists: Boolean($("authLogoutBtn")) });
     $("authLogoutBtn").addEventListener("click", signOut);
+    debugAuth("logout click listener attached");
     ["authUsername", "authPassword"].forEach((id) => $(id).addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -1836,6 +1928,12 @@
     });
     $("monthFilter").addEventListener("input", renderMonthly);
     $("cashForm").addEventListener("submit", saveMovement);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") syncSupabaseNow();
+      if (document.visibilityState === "visible") refreshSupabaseFromCloud();
+    });
+    window.addEventListener("focus", refreshSupabaseFromCloud);
+    window.addEventListener("pagehide", syncSupabaseNow);
     $("recordPicker").addEventListener("change", (event) => {
       if (event.target.value.startsWith("date:")) {
         const record = { ...dailyDefaults(), id: uid(), date: event.target.value.slice(5) };

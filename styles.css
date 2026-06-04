@@ -546,7 +546,7 @@ label {
 }
 
 .goal-card.attention strong {
-  color: var(--attention);
+  color: var(--ink);
 }
 
 .goal-card.muted-goal {
