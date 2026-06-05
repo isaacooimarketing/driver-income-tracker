@@ -483,6 +483,7 @@
     debugAuth("unlockPrivateApp called");
     if (isAppUnlocked) return;
     replaceState(loadState());
+    if (normalizeDailyRecords()) persist();
     seedManualNoteData();
     isAppUnlocked = true;
     document.body.classList.remove("auth-locked");
@@ -530,6 +531,41 @@
       merged.set(item.id, current ? newerItem(current, item) : item);
     });
     return Array.from(merged.values());
+  }
+
+  function preferredDailyRecord(current, candidate) {
+    const currentTime = Date.parse(current?.updatedAt || "") || 0;
+    const candidateTime = Date.parse(candidate?.updatedAt || "") || 0;
+    if (candidateTime !== currentTime) return candidateTime > currentTime ? candidate : current;
+    if (current?.status !== candidate?.status) return candidate?.status === "closed" ? candidate : current;
+    return String(candidate?.id || "") > String(current?.id || "") ? candidate : current;
+  }
+
+  function normalizeDailyRecords() {
+    const byDate = new Map();
+    const removedIds = [];
+
+    state.records.forEach((record) => {
+      const key = record.date || record.id;
+      const current = byDate.get(key);
+      if (!current) {
+        byDate.set(key, record);
+        return;
+      }
+
+      const winner = preferredDailyRecord(current, record);
+      const loser = winner === current ? record : current;
+      byDate.set(key, winner);
+      if (loser?.id && loser.id !== winner?.id) removedIds.push(loser.id);
+    });
+
+    state.records = Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date));
+    if (removedIds.length) {
+      const activeIds = new Set(state.records.map((record) => record.id));
+      state.deletedRecordIds = Array.from(new Set([...(state.deletedRecordIds || []), ...removedIds]))
+        .filter((id) => !activeIds.has(id));
+    }
+    return removedIds.length > 0;
   }
 
   function supabaseReady() {
@@ -661,9 +697,11 @@
       state.movements = mergeById(state.movements, remoteMovements)
         .sort((a, b) => b.date.localeCompare(a.date));
       state.deletedRecordIds = deletedRecordIds;
+      const removedDuplicateRecords = normalizeDailyRecords();
       state.seededNoteVersion = state.seededNoteVersion || remoteMeta.seededNoteVersion || "";
       state.lastSyncedAt = remoteMeta.lastSyncedAt || state.lastSyncedAt || "";
       persist({ skipSync: true });
+      if (removedDuplicateRecords) scheduleSupabaseSync(0);
       restoreDraftOrDefault();
       renderAll();
       debugAuth("pullSupabaseState applied");
@@ -683,6 +721,7 @@
     debugAuth("syncSupabaseState start", { requestEpoch, requestUserId });
     isSyncing = true;
     try {
+      normalizeDailyRecords();
       const now = new Date().toISOString();
       const recordRows = state.records.map((record) => ({
         id: record.id,
@@ -1068,6 +1107,7 @@
       state.records.sort((a, b) => b.date.localeCompare(a.date));
       state.movements.sort((a, b) => b.date.localeCompare(a.date));
       state.seededNoteVersion = SEEDED_NOTE_VERSION;
+      normalizeDailyRecords();
       persist();
     }
   }
