@@ -1252,8 +1252,11 @@
     if (tngEwalletDelta !== null && tngEwalletDelta > 0) {
       $("grabTng").value = "";
       $("boltTng").value = "";
+      setCalculatedAmount("totalTngCollected", tngEwalletDelta);
       if (mode === "grab") setCalculatedAmount("grabTng", tngEwalletDelta);
       else setCalculatedAmount("boltTng", tngEwalletDelta);
+    } else if (tngEwalletDelta !== null) {
+      setCalculatedAmount("totalTngCollected", 0);
     }
 
     const ewalletCost = tngEwalletDelta !== null && tngEwalletDelta < 0 ? Math.abs(tngEwalletDelta) : 0;
@@ -1938,12 +1941,122 @@
     refreshLiveTotals();
   }
 
+  function debugRecords(records, source) {
+    return records.map((record) => {
+      const totals = calculate(record);
+      return {
+        source,
+        date: record.date || "",
+        id: record.id || "",
+        status: record.status || "",
+        net: Math.round(totals.net * 100) / 100,
+        sales: Math.round(totals.totalSales * 100) / 100,
+        cost: Math.round(totals.totalCost * 100) / 100,
+        updatedAt: record.updatedAt || ""
+      };
+    }).sort((a, b) => `${a.date}${a.source}${a.id}`.localeCompare(`${b.date}${b.source}${b.id}`));
+  }
+
+  function debugTable(rows) {
+    if (!rows.length) return "<p class=\"helper-text\">No records found.</p>";
+    return `
+      <div class="debug-table-wrap">
+        <table class="debug-table">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Date</th>
+              <th>Record ID</th>
+              <th>Status</th>
+              <th>Net</th>
+              <th>Sales</th>
+              <th>Cost</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>
+                <td>${escapeHtml(row.source)}</td>
+                <td>${escapeHtml(row.date)}</td>
+                <td>${escapeHtml(row.id)}</td>
+                <td>${escapeHtml(row.status)}</td>
+                <td>${formatMoney(row.net)}</td>
+                <td>${formatMoney(row.sales)}</td>
+                <td>${formatMoney(row.cost)}</td>
+                <td>${escapeHtml(row.updatedAt)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  async function renderDebugSync() {
+    const output = $("debugSyncOutput");
+    if (!output) return;
+    output.innerHTML = "Loading debug data...";
+
+    const localState = loadState();
+    const localRecords = Array.isArray(localState.records) ? localState.records : [];
+    const localRows = debugRecords(localRecords, "localStorage");
+    const localNet = grandTotals(localRecords, []).net;
+    let supabaseRecords = [];
+    let supabaseRows = [];
+    let supabaseNet = 0;
+    let supabaseError = "";
+
+    try {
+      if (!supabaseReady()) throw new Error("Supabase is not ready or user is not logged in.");
+      const result = await supabaseClient
+        .from("daily_records")
+        .select("id,date,payload,updated_at", { count: "exact" });
+      if (result.error) throw result.error;
+      supabaseRecords = (result.data || []).map(rowPayload);
+      supabaseRows = debugRecords(supabaseRecords, "Supabase");
+      supabaseNet = grandTotals(supabaseRecords, []).net;
+    } catch (error) {
+      supabaseError = error.message || String(error);
+    }
+
+    const allRows = [...localRows, ...supabaseRows];
+    const localIds = new Set(localRows.map((row) => row.id));
+    const supabaseIds = new Set(supabaseRows.map((row) => row.id));
+    const overlapRows = allRows.map((row) => ({
+      ...row,
+      source: `${row.source} (${localIds.has(row.id) && supabaseIds.has(row.id) ? "both" : row.source === "localStorage" ? "local only" : "cloud only"})`
+    }));
+
+    output.innerHTML = `
+      <div class="debug-summary">
+        <article><span>User ID</span><strong>${escapeHtml(supabaseUserId || "Not logged in")}</strong></article>
+        <article><span>localStorage records</span><strong>${localRecords.length}</strong></article>
+        <article><span>Supabase daily_records</span><strong>${supabaseRecords.length}</strong></article>
+        <article><span>localStorage net</span><strong>${formatMoney(localNet)}</strong></article>
+        <article><span>Supabase net</span><strong>${formatMoney(supabaseNet)}</strong></article>
+      </div>
+      ${supabaseError ? `<p class="debug-error">${escapeHtml(supabaseError)}</p>` : ""}
+      ${debugTable(overlapRows)}
+    `;
+
+    console.log("Driver Tracker Debug Sync", {
+      userId: supabaseUserId,
+      localStorageRecordsCount: localRecords.length,
+      supabaseDailyRecordsCount: supabaseRecords.length,
+      localStorageNetIncomeTotal: Math.round(localNet * 100) / 100,
+      supabaseNetIncomeTotal: Math.round(supabaseNet * 100) / 100,
+      records: overlapRows,
+      supabaseError
+    });
+  }
+
   function initEvents() {
     fields.forEach((field) => $(field).addEventListener("input", () => {
+      if (balanceFields.includes(field)) applyBalanceDifferences();
       refreshLiveTotals();
       autoSaveDraft();
     }));
-    balanceFields.forEach((field) => $(field).addEventListener("input", applyBalanceDifferences));
     $("dailyForm").addEventListener("submit", saveDailyRecord);
     $("newRecordBtn").addEventListener("click", startNewRecord);
     $("duplicateBtn").addEventListener("click", duplicateYesterday);
@@ -1951,6 +2064,7 @@
     $("deleteRecordBtn").addEventListener("click", deleteDailyRecord);
     $("endDayBtn").addEventListener("click", endToday);
     $("exportExcelBtn").addEventListener("click", exportExcel);
+    $("debugSyncBtn").addEventListener("click", renderDebugSync);
     $("authLoginBtn").addEventListener("click", loginWithPassword);
     debugAuth("attaching logout click listener", { logoutButtonExists: Boolean($("authLogoutBtn")) });
     $("authLogoutBtn").addEventListener("click", signOut);

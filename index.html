@@ -202,6 +202,14 @@
           <div class="goal-grid" id="monthlyGoals"></div>
           <div class="summary-grid" id="monthlyMetrics"></div>
         </section>
+
+        <section class="page" id="page-debug" aria-labelledby="nav-debug">
+          <section class="card stack">
+            <h2>Debug Sync</h2>
+            <button class="primary-btn" id="debugSyncBtn" type="button">Debug Sync</button>
+            <div class="debug-output" id="debugSyncOutput">Click Debug Sync to compare localStorage and Supabase.</div>
+          </section>
+        </section>
       </main>
     </div>
 
@@ -211,6 +219,7 @@
       <button id="nav-cash" data-page="cash" data-title-key="titleCash" type="button">现金</button>
       <button id="nav-compare" data-page="compare" data-title-key="titleCompare" type="button">比较</button>
       <button id="nav-monthly" data-page="monthly" data-title-key="titleMonth" type="button">月份</button>
+      <button id="nav-debug" data-page="debug" data-title-key="titleDebug" type="button">Debug Sync</button>
     </nav>
 
     <script src="/api/config.js"></script>

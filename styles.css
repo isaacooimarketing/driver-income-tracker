@@ -539,6 +539,74 @@ label {
   box-shadow: var(--soft-shadow);
 }
 
+.debug-output {
+  display: grid;
+  gap: 14px;
+  font-size: 0.85rem;
+}
+
+.debug-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.debug-summary article {
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 2px solid rgba(8, 8, 11, 0.14);
+  border-radius: 8px;
+}
+
+.debug-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.debug-summary strong {
+  display: block;
+  margin-top: 8px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.debug-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.debug-table {
+  width: 100%;
+  min-width: 780px;
+  border-collapse: collapse;
+  background: rgba(255, 255, 255, 0.78);
+  border: 2px solid rgba(8, 8, 11, 0.14);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.debug-table th,
+.debug-table td {
+  padding: 10px;
+  border-bottom: 1px solid rgba(8, 8, 11, 0.1);
+  text-align: left;
+  vertical-align: top;
+}
+
+.debug-table th {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.debug-error {
+  color: #b3172c;
+  font-weight: 900;
+}
+
 .goal-card.attention {
   background: var(--attention);
   border-color: var(--line);
