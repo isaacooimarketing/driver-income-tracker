@@ -1948,13 +1948,14 @@
         source,
         date: record.date || "",
         id: record.id || "",
+        platform: record.platformMode || "",
         status: record.status || "",
         net: Math.round(totals.net * 100) / 100,
         sales: Math.round(totals.totalSales * 100) / 100,
         cost: Math.round(totals.totalCost * 100) / 100,
         updatedAt: record.updatedAt || ""
       };
-    }).sort((a, b) => `${a.date}${a.source}${a.id}`.localeCompare(`${b.date}${b.source}${b.id}`));
+    }).sort((a, b) => `${a.date}${a.id}${a.source}`.localeCompare(`${b.date}${b.id}${b.source}`));
   }
 
   function debugTable(rows) {
@@ -1964,27 +1965,23 @@
         <table class="debug-table">
           <thead>
             <tr>
-              <th>Source</th>
               <th>Date</th>
               <th>Record ID</th>
-              <th>Status</th>
+              <th>Platform</th>
               <th>Net</th>
-              <th>Sales</th>
-              <th>Cost</th>
-              <th>Updated</th>
+              <th>Source</th>
+              <th>Exists</th>
             </tr>
           </thead>
           <tbody>
             ${rows.map((row) => `
               <tr>
-                <td>${escapeHtml(row.source)}</td>
                 <td>${escapeHtml(row.date)}</td>
                 <td>${escapeHtml(row.id)}</td>
-                <td>${escapeHtml(row.status)}</td>
+                <td>${escapeHtml(row.platform)}</td>
                 <td>${formatMoney(row.net)}</td>
-                <td>${formatMoney(row.sales)}</td>
-                <td>${formatMoney(row.cost)}</td>
-                <td>${escapeHtml(row.updatedAt)}</td>
+                <td>${escapeHtml(row.source)}</td>
+                <td>${escapeHtml(row.exists)}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -2025,8 +2022,12 @@
     const supabaseIds = new Set(supabaseRows.map((row) => row.id));
     const overlapRows = allRows.map((row) => ({
       ...row,
-      source: `${row.source} (${localIds.has(row.id) && supabaseIds.has(row.id) ? "both" : row.source === "localStorage" ? "local only" : "cloud only"})`
-    }));
+      exists: localIds.has(row.id) && supabaseIds.has(row.id)
+        ? "both"
+        : row.source === "localStorage"
+          ? "current device only"
+          : "Supabase only"
+    })).sort((a, b) => `${a.date}${a.id}${a.source}`.localeCompare(`${b.date}${b.id}${b.source}`));
 
     output.innerHTML = `
       <div class="debug-summary">
